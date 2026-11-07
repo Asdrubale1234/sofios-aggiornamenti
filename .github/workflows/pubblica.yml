@@ -1,0 +1,44 @@
+name: Pubblica aggiornamento
+on:
+  push:
+    branches: [main]
+    paths: ['VERSIONE', 'pacchetto/**', 'allowed_signers', '.github/workflows/pubblica.yml']
+permissions:
+  contents: write
+jobs:
+  pubblica:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Crea il pacchetto
+        run: |
+          set -e
+          N=$(tr -d ' \n' < VERSIONE)
+          echo "$N" | grep -Eq '^[0-9]+$'
+          mkdir -p out tmp
+          cp VERSIONE tmp/VERSIONE
+          cp -a pacchetto/files tmp/files
+          [ -f pacchetto/aggiorna.sh ] && cp pacchetto/aggiorna.sh tmp/aggiorna.sh
+          tar -C tmp --owner=0 --group=0 --numeric-owner -czf out/aggiornamento.tar.gz $(ls tmp)
+          echo "$N" > out/versione.txt
+          echo "N=$N" >> "$GITHUB_ENV"
+      - name: Firma
+        env:
+          CHIAVE: ${{ secrets.SOFIOS_UPDATE_KEY }}
+        run: |
+          set -e
+          test -n "$CHIAVE" || { echo "Manca il segreto SOFIOS_UPDATE_KEY"; exit 1; }
+          umask 077
+          printf '%s\n' "$CHIAVE" > "$RUNNER_TEMP/chiave"
+          ssh-keygen -Y sign -f "$RUNNER_TEMP/chiave" -n sofios-update out/aggiornamento.tar.gz
+          shred -u "$RUNNER_TEMP/chiave" || rm -f "$RUNNER_TEMP/chiave"
+      - name: Verifica la firma (come farà il sistema)
+        run: |
+          ssh-keygen -Y verify -f allowed_signers -I sofios-aggiornamenti -n sofios-update \
+            -s out/aggiornamento.tar.gz.sig < out/aggiornamento.tar.gz
+      - name: Pubblica
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$N" --latest --title "Aggiornamento $N" --notes "Aggiornamento SofiOS $N" \
+            out/aggiornamento.tar.gz out/aggiornamento.tar.gz.sig out/versione.txt
